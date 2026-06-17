@@ -19,6 +19,7 @@ defmodule PhoenixAdoptMobDemoWeb.Router do
 
     get "/", PageController, :home
     live "/demo", DemoLive
+    live "/notes", NotesLive
   end
 
   # Other scopes may use custom stacks.
