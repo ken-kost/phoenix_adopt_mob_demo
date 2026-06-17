@@ -68,12 +68,22 @@ const VibrateBtn = {
   }
 }
 
+// Demo hook: show a native toast (see DemoLive). Same "mob_message" contract
+// as VibrateBtn — handle_event calls Mob.Alert.toast/2 on-device.
+const ToastBtn = {
+  mounted() {
+    this.el.addEventListener("click", () => {
+      this.pushEvent("mob_message", {action: "toast", message: "Hello from native!"})
+    })
+  }
+}
+
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {MobHook, VibrateBtn, ...colocatedHooks},
+  hooks: {MobHook, VibrateBtn, ToastBtn, ...colocatedHooks},
 })
 
 // Show progress bar on live navigation and form submits

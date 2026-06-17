@@ -24,6 +24,11 @@ defmodule PhoenixAdoptMobDemoWeb.DemoLive do
     {:noreply, log(socket, "📳 vibrate → Mob.Haptic.trigger(:medium)")}
   end
 
+  def handle_event("mob_message", %{"action" => "toast", "message" => message}, socket) do
+    if native?(), do: Mob.Alert.toast(socket, message)
+    {:noreply, log(socket, "🔔 toast → Mob.Alert.toast(#{inspect(message)})")}
+  end
+
   # Catch-all so an unhandled bridge message can never crash the LiveView.
   def handle_event("mob_message", _payload, socket), do: {:noreply, socket}
 
@@ -49,6 +54,13 @@ defmodule PhoenixAdoptMobDemoWeb.DemoLive do
           class="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-700"
         >
           Buzz the phone
+        </button>
+        <button
+          id="toast-btn"
+          phx-hook="ToastBtn"
+          class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-600"
+        >
+          Show a native toast
         </button>
       </div>
 
