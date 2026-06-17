@@ -38,3 +38,6 @@ npm-debug.log
 
 # Mob local config
 mob.exs
+
+# Machine-specific Android paths (SDK + Mob OTP cache), written by `mix mob.install`.
+android/local.properties

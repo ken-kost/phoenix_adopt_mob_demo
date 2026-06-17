@@ -186,40 +186,71 @@ for the full design. In short:
 
 Different task — same name, different owner. `mob.install` is shipped
 by `:mob_dev` (which `mob.adopt` just added to your deps). Runs once
-per device. It downloads the OTP runtime tarball, sets up signing,
-generates an app icon, etc.
+per device. It:
+
+1. **Writes the local config for you** — detects sensible defaults and
+   writes `mob.exs` (`mob_dir`, `elixir_lib`) and
+   `android/local.properties` (`sdk.dir`, OTP cache paths). This is most
+   of Step 5 — for the Hex-based flow you usually don't edit anything.
+2. **Downloads + caches the OTP runtime tarballs** (Android arm64/arm32/
+   x86_64; iOS too on macOS). On a non-macOS host the **iOS OTP is
+   skipped** — so Android is the only deploy target on Linux.
+3. **Installs the Android NDK** if missing, and writes placeholder app
+   icons (replace later with `mix mob.icon`).
 
 ```bash
 mix mob.install
 ```
 
-Follow the prompts. The defaults are fine for a demo.
+Follow the prompts (the defaults are fine for a demo). Verified output
+on this Linux host: Android OTP cached under `~/.mob/cache`, NDK
+installed, iOS OTP skipped, placeholder icons written.
 
 ---
 
-## Step 5 — Local configuration
+## Step 5 — Local configuration (verify what Step 4 wrote)
 
-### `mob.exs`
+`mix mob.install` already populated these in Step 4. This step is just
+to **review** them — and to **edit** only if you're using a local `mob`
+checkout or your SDK lives somewhere non-standard.
 
-The `mob.adopt` task seeded `mob.exs` with placeholder paths. Edit
-to point at your machine's `mob` checkout (or leave the Hex defaults
-if not using local mob):
+### `mob.exs` (gitignored, machine-specific)
+
+For the **Hex** flow, `mob.install` writes `mob_dir: "deps/mob"` and
+auto-derives `elixir_lib` from your running Elixir — no edit needed:
 
 ```elixir
-# mob.exs
+# mob.exs (as written by mob.install — Hex flow)
 import Config
 config :mob_dev,
-  mob_dir: "/home/you/code/mob",
-  elixir_lib: "/home/you/.asdf/installs/elixir/1.19.0-otp-28/lib"
+  mob_dir: Path.join(File.cwd!(), "deps/mob"),
+  elixir_lib:
+    System.get_env("MOB_ELIXIR_LIB", :code.lib_dir(:elixir) |> to_string() |> Path.dirname())
 ```
 
-### Android SDK
+If you're a **Mob contributor using a local clone** (`mix mob.adopt
+--local`), point `mob_dir` at it instead, e.g.
+`mob_dir: "/home/you/code/mob"`.
+
+### Android SDK — `android/local.properties` (gitignored)
+
+`mob.install` writes `sdk.dir` plus the OTP cache paths. Confirm
+`sdk.dir` points at a real SDK:
 
 ```ini
-# android/local.properties
-sdk.dir=/home/you/Android/Sdk          # Linux
+# android/local.properties (machine-specific; gitignored)
+sdk.dir=/home/you/Android/Sdk             # Linux
 # sdk.dir=/Users/you/Library/Android/sdk  # macOS
+mob.otp_release=/home/you/.mob/cache/otp-android-<tag>
+# …arm32 / x86_64 paths…
 ```
+
+> **Note — `local.properties` should be gitignored.** Like `mob.exs`, it
+> holds machine-specific paths and the file header says "NOT committed
+> to version control" — but `mob.adopt` tracks it (only `mob.exs` gets
+> the `.gitignore` entry). This demo adds `android/local.properties` to
+> `.gitignore` and untracks it. Tracked as a `mob_new` follow-up: adopt
+> should ignore `local.properties` too.
 
 ---
 
