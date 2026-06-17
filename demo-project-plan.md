@@ -257,19 +257,58 @@ mob.otp_release=/home/you/.mob/cache/otp-android-<tag>
 ## Step 6 — Deploy to device
 
 Start your Android emulator first (or plug in a physical device with
-USB debugging enabled). Then:
+USB debugging enabled). Two prerequisites the bare `mob.deploy` doesn't
+handle for you:
 
 ```bash
+# 1. zig must be on PATH — the native build cross-compiles the BEAM +
+#    NIFs with `zig build`. Without it, the build silently skips the
+#    zig step and the CMake fallback fails ("Cannot find source file").
+which zig || export PATH="/path/to/zig:$PATH"   # 0.16.x works here
+
+# 2. Build the frontend assets — there's no esbuild/tailwind watcher
+#    on-device, so app.js / app.css must be pre-compiled into
+#    priv/static/assets or they 404 (unstyled page, no LiveView JS).
+mix assets.build
+
+# 3. Deploy (first run builds the APK; later runs are fast).
 mix mob.deploy --native
 ```
 
-First build is slow (~3–5 min) — it's compiling the native shell,
+First build is slow (~1–5 min) — it's compiling the native shell,
 packaging the BEAM, building the APK, and signing. Subsequent
 deploys (without `--native`) skip the native rebuild and just push
 the changed BEAMs (~2–3 sec).
 
 When the build finishes, the app launches on the device. You should
 see the Phoenix LiveView welcome page rendered inside the WebView.
+
+### On-device fixes — three `mob.adopt` template bugs
+
+Getting a clean first launch surfaced three issues in the generated
+`mob_app.ex` (all verified on an x86_64 Android emulator; all tracked
+as `mob_new` follow-ups). This demo fixes them in `mob_app.ex`:
+
+1. **WebView port mismatch → `ERR_CONNECTION_REFUSED`.** `mob_screen.ex`
+   defaults the WebView URL to `http://127.0.0.1:4000/`, but `mob_app.ex`
+   boots the endpoint on a *hashed* `liveview_port` (e.g. 4743). Fix:
+   `mob_app.ex` publishes the real URL before boot —
+   `Application.put_env(:mob, :host_url, "http://127.0.0.1:#{liveview_port}/")`
+   (unless a remote `host_url` is configured).
+2. **`live_reload: false` → `FunctionClauseError` on every request.** The
+   device build compiles with `MIX_ENV=dev`, so `Phoenix.LiveReloader` is
+   in the pipeline; it does `config[:live_reload][:patterns]`, which
+   crashes when the value is the boolean `false`. Fix: set
+   `live_reload: [patterns: []]` (reloader present but inert).
+3. **Assets 404 (covered above).** Strictly a flow gap, not `mob_app.ex`:
+   `mix mob.deploy --native` should run `mix assets.build` (or
+   `assets.deploy`) so compiled CSS/JS are bundled. Until then, build
+   them yourself first.
+
+Also note: `mob.adopt` doesn't gitignore the native build outputs
+(`android/.gradle`, `android/app/build`, `.cxx`, `.zig-cache`,
+`jniLibs`, generated `java/io/`, `priv/generated`). This demo adds them
+to `.gitignore`.
 
 ### iOS variant
 
@@ -286,19 +325,36 @@ download a development profile.
 ## Step 7 — Verify the happy path
 
 Without writing any extra code, confirm these all work in the
-deployed app:
+deployed app. **All five were verified on an x86_64 Android emulator
+for this demo** (results noted):
 
-- [ ] Welcome page renders (Phoenix's standard `PageController.home`)
-- [ ] LiveView socket connects (no "disconnected" banner)
-- [ ] Refresh / navigation works
-- [ ] In the WebView devtools console (Safari Web Inspector for iOS,
-      `chrome://inspect` for Android Chrome):
+- [x] **Welcome page renders** (Phoenix's standard `PageController.home`)
+      — the styled Phoenix v1.8.8 welcome page renders in the WebView.
+- [x] **LiveView socket connects** — the welcome page is a *controller*
+      page (no LV), so its `liveSocket.isConnected()` is `false` and
+      that's correct. Navigating to a LiveView route (e.g.
+      `/dev/dashboard/home`) gives `isConnected() === true` and the
+      LiveDashboard renders live on-device.
+- [x] **Refresh / navigation works** — navigating `/` → `/dev/dashboard`
+      reconnects cleanly.
+- [x] **`window.mob` is the native bridge** — in the WebView devtools
+      (Safari Web Inspector for iOS; `chrome://inspect` or the CDP
+      endpoint for Android):
       ```javascript
-      typeof window.mob   // → "object"
+      typeof window.mob          // → "object"
+      Object.keys(window.mob)    // → ["send","onMessage","_dispatch"]
       ```
-      That's the native bridge injection. If it's `"undefined"`, the
-      native shell didn't inject — re-run `mix mob.deploy --native`
-      and check the Logcat / device console for errors.
+      If it's `"undefined"`, the native shell didn't inject — re-run
+      `mix mob.deploy --native` and check Logcat / the device console.
+- [x] **On-device persistence** — the on-device SQLite `LocalRepo`
+      migrates at boot (`[info] Migrations already up`) and creates
+      `app.db` in the app's data dir, with no Postgres connection
+      attempt. Confirms the two-repo wiring (Step 3) works on-device.
+
+> Tip for headless verification: `adb forward tcp:9222
+> localabstract:webview_devtools_remote_<pid>`, then drive the WebView
+> over the Chrome DevTools Protocol (`http://localhost:9222/json`) to
+> evaluate `typeof window.mob` and `liveSocket.isConnected()`.
 
 At this point you've proven `mob.adopt` works end-to-end on the
 blessed shape. Steps 8–9 below are the "wow factor" — feel free to
@@ -680,6 +736,10 @@ which `git diff` will also show:
 | `mix compile` fails after adopt | The generated `mob_app.ex` referenced a Mob module that isn't in your `:mob` version. Check Mob's CHANGELOG for breaking changes since `mob_new`'s template. |
 | `(UndefinedFunctionError) ... Ecto.Migrator` / `ecto_sqlite3` not started | The generated `mob_app.ex` needs `:ecto_sqlite3`, which `mob.adopt` doesn't add. Add `{:ecto_sqlite3, "~> 0.18"}` to deps. See [On-device database](#on-device-database--reconciling-a-postgres-host-step-3-wiring). |
 | On-device boot crashes trying to reach Postgres | The active repo wasn't switched to SQLite. Confirm `mob_app.ex` sets `:repo` to `<App>.LocalRepo` *before* `ensure_all_started`, and that `application.ex` starts the active repo (not a hardcoded Postgres `Repo`). |
+| Native build fails: `CMake ... Cannot find source file` | `zig` isn't on PATH, so the `zig build` step was skipped and the CMake fallback can't find the generated sources. Put zig (0.16.x) on PATH and re-run. |
+| WebView: `ERR_CONNECTION_REFUSED` at `http://127.0.0.1:4000/` | Port mismatch — `mob_screen.ex` defaults to 4000 but the endpoint binds the hashed `liveview_port`. Have `mob_app.ex` set `:host_url` to `http://127.0.0.1:#{liveview_port}/` (Step 6 fix #1). |
+| WebView: `FunctionClauseError` in `Access.get(false, :patterns, …)` | `mob_app.ex` sets `live_reload: false`; `Phoenix.LiveReloader` needs a keyword list. Use `live_reload: [patterns: []]` (Step 6 fix #2). |
+| Page renders unstyled; `/assets/*` 404 | Frontend assets weren't built. Run `mix assets.build` before `mix mob.deploy --native` (Step 6 fix #3). |
 | App launches but WebView shows error page | Local Phoenix endpoint isn't up. The default `mob_app.ex` (LV mode) boots Phoenix on-device. Check `Logcat` for crash logs. |
 | `window.mob` is undefined in the WebView | Native shell didn't inject. Re-run `mix mob.deploy --native` and look for build errors. |
 

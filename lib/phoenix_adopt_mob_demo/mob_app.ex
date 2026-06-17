@@ -30,6 +30,16 @@ defmodule PhoenixAdoptMobDemo.MobApp do
     liveview_port = Application.get_env(:mob, :liveview_port, default_liveview_port())
     Application.put_env(:mob, :liveview_port, liveview_port)
 
+    # Point the WebView (MobScreen) at the on-device endpoint's ACTUAL
+    # port. Without this the generated MobScreen falls back to its
+    # hardcoded `http://127.0.0.1:4000/`, which doesn't match the hashed
+    # `liveview_port` the endpoint binds — the WebView then shows
+    # ERR_CONNECTION_REFUSED. Skip if a remote `host_url` was configured
+    # (thin-client mode). (mob.adopt template mismatch — mob_new follow-up.)
+    unless Application.get_env(:mob, :host_url) do
+      Application.put_env(:mob, :host_url, "http://127.0.0.1:#{liveview_port}/")
+    end
+
     Application.put_env(:phoenix_adopt_mob_demo, PhoenixAdoptMobDemoWeb.Endpoint,
       adapter: Bandit.PhoenixAdapter,
       http: [ip: {127, 0, 0, 1}, port: liveview_port],
@@ -45,7 +55,14 @@ defmodule PhoenixAdoptMobDemo.MobApp do
       # flags the boot log gets a warning per missing tool.
       code_reloader: false,
       watchers: [],
-      live_reload: false
+      # The device build compiles with MIX_ENV=dev, so `code_reloading?`
+      # is true and Phoenix.LiveReloader is in the pipeline. It reads
+      # `config[:live_reload][:patterns]` — so this MUST be a keyword list,
+      # not `false` (the generated value), which makes it crash with
+      # `Access.get(false, :patterns, nil)` (FunctionClauseError) on every
+      # request. Empty patterns = reloader present but inert.
+      # (mob.adopt template bug — mob_new follow-up.)
+      live_reload: [patterns: []]
     )
 
     # esbuild + tailwind are dev-time asset compilers. They get pulled in
