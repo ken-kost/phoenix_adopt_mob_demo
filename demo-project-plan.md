@@ -357,58 +357,106 @@ for this demo** (results noted):
 > evaluate `typeof window.mob` and `liveSocket.isConnected()`.
 
 At this point you've proven `mob.adopt` works end-to-end on the
-blessed shape. Steps 8–9 below are the "wow factor" — feel free to
+blessed shape. Steps 8–10 below are the "wow factor" — feel free to
 stop here if you just wanted to confirm the install path.
 
 ---
 
 ## Step 8 — Native interaction #1: vibrate on tap
 
-Tiny but visceral. Add a button to the stock Phoenix LV welcome page
-that buzzes the phone via the native bridge.
+Tiny but visceral: a button that buzzes the phone through the bridge.
+Two things to get right — both surfaced while verifying in the browser,
+and both differ from this plan's first draft:
 
-Edit `lib/phoenix_adopt_mob_demo_web/controllers/page_html/home.html.heex` (or
-wherever the home page renders) and append:
+- **Put it on a LiveView, not the welcome page.** The stock welcome page
+  (`PageController.home`) is a *controller* (dead) page — a `phx-hook`
+  never mounts there, so the LiveView bridge can't fire. Add a dedicated
+  `DemoLive` at `/demo` and link to it from home (the same "separate
+  LiveView route" pattern Step 10 uses for `/notes`). This keeps Step
+  7's verified stock welcome page intact.
+- **Trigger via an in-view hook's `pushEvent`, not `window.mob.vibrate`.**
+  There is no `window.mob.vibrate` — the JS bridge API is
+  `send`/`onMessage`/`_dispatch`, and native effects are Elixir-side
+  (`Mob.Haptic`). In LiveView-bridge mode `window.mob.send` is literally
+  `(data) => this.pushEvent("mob_message", data)`, so we push that same
+  `"mob_message"` event from a hook *inside* `DemoLive` (see the bridge
+  note at the end of the step for why "inside" matters).
 
-```heex
-<button
-  id="vibrate-btn"
-  phx-hook="VibrateBtn"
-  class="rounded bg-zinc-900 px-4 py-2 text-white"
->
-  Buzz the phone
-</button>
+Create `lib/phoenix_adopt_mob_demo_web/live/demo_live.ex`:
+
+```elixir
+defmodule PhoenixAdoptMobDemoWeb.DemoLive do
+  use PhoenixAdoptMobDemoWeb, :live_view
+
+  def mount(_params, _session, socket),
+    do: {:ok, assign(socket, events: [], page_title: "Native bridge demo")}
+
+  def handle_event("mob_message", %{"action" => "vibrate"}, socket) do
+    if native?(), do: Mob.Haptic.trigger(socket, :medium)
+    {:noreply, log(socket, "📳 vibrate → Mob.Haptic.trigger(:medium)")}
+  end
+
+  # Catch-all so an unhandled bridge message can never crash the LiveView.
+  def handle_event("mob_message", _payload, socket), do: {:noreply, socket}
+
+  def render(assigns) do
+    ~H"""
+    <Layouts.app flash={@flash}>
+      <.header>Native bridge demo</.header>
+      <div class="mt-8 flex flex-wrap gap-3">
+        <button id="vibrate-btn" phx-hook="VibrateBtn"
+          class="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white">
+          Buzz the phone
+        </button>
+      </div>
+      <ul id="event-log" class="mt-8 ...">
+        <li :for={{event, i} <- Enum.with_index(@events)} id={"event-#{i}"}>{event}</li>
+      </ul>
+    </Layouts.app>
+    """
+  end
+
+  defp log(socket, msg), do: update(socket, :events, &Enum.take([msg | &1], 8))
+
+  # True only on a device — the NIF raises when not loaded (mirrors
+  # Mob.App.safe_platform/0). Guards every native call so the page also
+  # runs in a plain browser.
+  defp native? do
+    :mob_nif.platform() in [:ios, :android]
+  rescue
+    _ -> false
+  end
+end
 ```
 
-In `assets/js/app.js`, after the existing `MobHook` definition, add
-a tiny hook that calls into the native bridge:
+In `assets/js/app.js`, after the existing `MobHook`, add the hook and
+register it in the `LiveSocket` initialiser:
 
 ```javascript
 const VibrateBtn = {
   mounted() {
     this.el.addEventListener("click", () => {
-      // The exact bridge call depends on mob's runtime API.
-      // Check `mob_dev`'s docs for the canonical vibrate function;
-      // the pattern is always: `window.mob.<something>(...)`.
-      if (window.mob && window.mob.vibrate) {
-        window.mob.vibrate(120)            // 120 ms buzz
-      } else {
-        // Fallback: send a generic message and let BEAM handle it.
-        window.mob.send({op: "vibrate", ms: 120})
-      }
+      this.pushEvent("mob_message", {action: "vibrate"})
     })
   }
 }
+
+const liveSocket = new LiveSocket("/live", Socket, {
+  hooks: {MobHook, VibrateBtn, ...colocatedHooks},   // ← add VibrateBtn
+  params: {_csrf_token: csrfToken},
+})
 ```
 
-Register the hook in the existing `LiveSocket` initialiser (alongside
-`MobHook`):
+Add the route and a link from home:
 
-```javascript
-let liveSocket = new LiveSocket("/live", Socket, {
-  hooks: { MobHook, VibrateBtn },    // ← add VibrateBtn
-  params: { _csrf_token: csrfToken }
-})
+```elixir
+# router.ex — inside scope "/" with pipe_through :browser
+live "/demo", DemoLive
+```
+
+```heex
+<%!-- home.html.heex --%>
+<.link navigate={~p"/demo"} class="...">Native bridge demo &rarr;</.link>
 ```
 
 Redeploy (Phoenix-only change — no native rebuild needed):
@@ -417,46 +465,65 @@ Redeploy (Phoenix-only change — no native rebuild needed):
 mix mob.deploy
 ```
 
-Tap the button. The phone buzzes.
+On the device, tap **Buzz the phone** → the phone buzzes (`native?/0`
+lets `Mob.Haptic.trigger/2` run). In a plain browser the NIF is absent,
+the guard skips it, and the round-trip is appended to the on-page log —
+which is how you verify the JS → LiveView path without a device.
+
+> **Bridge note — why an *in-view* hook.** `mix mob.adopt` injects
+> `MobHook` on `<div id="mob-bridge">` in `root.html.heex`. In Phoenix
+> 1.8's layout model that element is a sibling of `{@inner_content}` —
+> **outside** the LiveView container — so the `window.mob` it installs
+> has a `pushEvent` that never reaches the page LiveView (verified: no
+> `HANDLE EVENT` is logged when you call it). A hook on an element
+> *inside* `DemoLive` (like `VibrateBtn`) pushes to `DemoLive` correctly,
+> using the identical `"mob_message"` contract. Tracked as a `mob_new`
+> follow-up: emit the bridge element inside the app layout so
+> `window.mob` works directly on LiveView pages.
 
 ---
 
-## Step 9 — Native interaction #2: native toast / native alert
+## Step 9 — Native interaction #2: native toast
 
-Even simpler — call a native dialog from JS so you see the platform's
-own UI render on top of the WebView.
+Even simpler — call a native dialog so the platform's own UI renders on
+top of the WebView. Same mechanism as Step 8: a second button on
+`/demo`, a hook that pushes `"mob_message"`, and a `handle_event/3`
+clause that calls `Mob.Alert.toast/2` on-device.
+
+Add the button to `DemoLive`'s render, next to the vibrate one:
 
 ```heex
-<button
-  id="toast-btn"
-  phx-hook="ToastBtn"
-  class="rounded bg-emerald-700 px-4 py-2 text-white"
->
+<button id="toast-btn" phx-hook="ToastBtn"
+  class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white">
   Show a native toast
 </button>
 ```
+
+Add the `handle_event/3` clause (before the catch-all):
+
+```elixir
+def handle_event("mob_message", %{"action" => "toast", "message" => message}, socket) do
+  if native?(), do: Mob.Alert.toast(socket, message)
+  {:noreply, log(socket, "🔔 toast → Mob.Alert.toast(#{inspect(message)})")}
+end
+```
+
+Add the hook in `app.js` and register it alongside the others
+(`hooks: {MobHook, VibrateBtn, ToastBtn, ...colocatedHooks}`):
 
 ```javascript
 const ToastBtn = {
   mounted() {
     this.el.addEventListener("click", () => {
-      // Again — exact API per mob_dev docs. Common shapes:
-      //   window.mob.toast("Hello from native")
-      //   window.mob.send({op: "toast", message: "Hello"})
-      if (window.mob && window.mob.toast) {
-        window.mob.toast("Hello from native!")
-      } else {
-        window.mob.send({op: "toast", message: "Hello from native!"})
-      }
+      this.pushEvent("mob_message", {action: "toast", message: "Hello from native!"})
     })
   }
 }
-
-// Register ToastBtn alongside MobHook + VibrateBtn in LiveSocket hooks.
 ```
 
-Redeploy with `mix mob.deploy`, tap the button. A platform-native
-toast (Android) or alert (iOS) appears.
+Redeploy with `mix mob.deploy`, tap the button. A native toast (Android)
+or floating overlay (iOS) appears. In the browser the round-trip logs to
+the same on-page list, passing the message payload through.
 
 ---
 
@@ -653,12 +720,12 @@ defmodule PhoenixAdoptMobDemoWeb.NotesLive do
 end
 ```
 
-Optionally link to it from the welcome page
+Link to it from home, next to the Step 8 `/demo` link
 (`page_html/home.html.heex`):
 
 ```heex
-<.link navigate={~p"/notes"} class="mt-6 inline-flex rounded-lg bg-zinc-900 px-4 py-2 text-white">
-  Open the Notes demo (DB persistence) &rarr;
+<.link navigate={~p"/notes"} class="...">
+  Notes demo (DB persistence) &rarr;
 </.link>
 ```
 
