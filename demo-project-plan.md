@@ -24,6 +24,9 @@ build (compiles BEAM + native shell) and the emulator startup.
    WebView; channels reconnect; nothing webview-specific broken.
 4. **JS↔native interop works** — at least one button on the LV page
    triggers a visible native side effect (toast / vibrate / camera).
+5. **Persistence works in both worlds** — the same Ecto code persists to
+   **Postgres** when run as a server and to **SQLite** on the device
+   (see [Database persistence](#database-persistence-postgres-on-the-server-sqlite-on-device)).
 
 The "few simple features" at the end are deliberately tiny — they
 demonstrate the bridge is live, not the full Mob API surface.
@@ -49,7 +52,6 @@ flag in step 3 and rely on Hex.
 ## Step 1 — Generate the Phoenix LiveView project
 
 ```bash
-cd /tmp                # or wherever you keep throwaway projects
 mix phx.new phoenix_adopt_mob_demo --no-mailer
 cd phoenix_adopt_mob_demo
 ```
@@ -150,19 +152,33 @@ The compile must succeed before continuing. If it doesn't, the
 generated `mob_app.ex` / `mob_screen.ex` referenced something the
 host doesn't have — file an issue.
 
-> **Known rough edge — `--no-ecto` projects.** The default `mob.adopt`
-> template for `mob_app.ex` assumes the host has Ecto + `ecto_sqlite3`
-> (Mob's on-device SQLite story): it calls
-> `Application.ensure_all_started(:ecto_sqlite3)` and runs
-> `Ecto.Migrator` against `<App>.Repo`. On a `--no-ecto` project (like
-> this demo) those modules don't exist — `mix compile` emits
-> `Ecto.Migrator is undefined` warnings and the on-device boot would
-> crash at `ensure_all_started(:ecto_sqlite3)`. Fix: delete the
-> `ecto_sqlite3` start, the `Ecto.Migrator.with_repo(...)` block, and
-> the `migrations_dir/0` helper from the generated `mob_app.ex`. After
-> trimming, `mix compile` is clean and the app boots DB-free. (The
-> adopt template should detect `--no-ecto` and skip these — tracked as
-> a mob_new follow-up.)
+### On-device database — reconciling a Postgres host (Step 3 wiring)
+
+`mob.adopt`'s generated `mob_app.ex` assumes the host's `Repo` is
+*itself* SQLite (the `mix mob.new` shape): it starts `:ecto_sqlite3`
+and runs `Ecto.Migrator` against `<App>.Repo` directly. A standard
+Phoenix app uses **Postgres**, which can't run on a phone. So this demo
+keeps Postgres on the server and adds a second SQLite repo for the
+device. Step 3's commit wires this up — see
+[Database persistence](#database-persistence-postgres-on-the-server-sqlite-on-device)
+for the full design. In short:
+
+1. Add the SQLite adapter dep — `{:ecto_sqlite3, "~> 0.18"}`.
+2. Add `lib/<app>/local_repo.ex` (`Ecto.Adapters.SQLite3`, DB file under
+   `MOB_DATA_DIR`).
+3. Make the supervision tree start the **active** repo:
+   `Application.get_env(:<app>, :repo, <App>.Repo)` (Postgres default).
+4. In `mob_app.ex`, before boot, select SQLite for the device —
+   `Application.put_env(:<app>, :repo, <App>.LocalRepo)` — and migrate
+   `LocalRepo` (not the Postgres `Repo`).
+
+> **Two `mob.adopt` gaps this surfaces** (both tracked as `mob_new`
+> follow-ups): adopt does **not** add `:ecto_sqlite3` even though the
+> `mob_app.ex` it generates hard-depends on it (only `mix mob.new` adds
+> it, via `inject_ecto_sqlite3_dep`); and adopt does not detect a
+> non-SQLite host `Repo`, so it emits a `mob_app.ex` that would start
+> `ecto_sqlite3` yet migrate a Postgres repo on-device. Until those are
+> fixed, the four steps above are manual.
 
 ---
 
@@ -357,6 +373,218 @@ toast (Android) or alert (iOS) appears.
 
 ---
 
+## Database persistence: Postgres on the server, SQLite on-device
+
+The demo project keeps the stock `mix phx.new` database setup — a real
+**Postgres** repo (`PhoenixAdoptMobDemo.Repo`) — because that's the
+standard Phoenix shape and what you develop and deploy against. Mob's
+on-device story, however, is **SQLite**: a phone can't reach your
+server's Postgres, and Mob bundles SQLite (`ecto_sqlite3` / `exqlite`)
+for local, offline-first persistence.
+
+These are two databases, selected by where the BEAM is running:
+
+| Where | Repo | Adapter | When |
+|---|---|---|---|
+| Server / `mix phx.server` / dev / prod | `PhoenixAdoptMobDemo.Repo` | `Ecto.Adapters.Postgres` | host build |
+| On the device (Mob) | `PhoenixAdoptMobDemo.LocalRepo` | `Ecto.Adapters.SQLite3` | native build |
+
+### How the active repo is chosen
+
+Both repos compile into every build; only one is *started*. The
+supervision tree starts whichever repo `:repo` app-env points at,
+defaulting to Postgres:
+
+```elixir
+# lib/phoenix_adopt_mob_demo/application.ex
+children = [
+  PhoenixAdoptMobDemoWeb.Telemetry,
+  Application.get_env(:phoenix_adopt_mob_demo, :repo, PhoenixAdoptMobDemo.Repo),
+  # …
+]
+```
+
+`mob_app.ex` (the on-device BEAM entry point) flips that to SQLite
+*before* the app starts, then migrates the SQLite repo:
+
+```elixir
+# lib/phoenix_adopt_mob_demo/mob_app.ex  (inside start/0)
+Application.put_env(:phoenix_adopt_mob_demo, :repo, PhoenixAdoptMobDemo.LocalRepo)
+{:ok, _} = Application.ensure_all_started(:ecto_sqlite3)
+{:ok, _} = Application.ensure_all_started(:phoenix_adopt_mob_demo)
+
+Ecto.Migrator.with_repo(PhoenixAdoptMobDemo.LocalRepo, fn _repo ->
+  Ecto.Migrator.run(PhoenixAdoptMobDemo.LocalRepo, migrations_dir(), :up, all: true)
+end)
+```
+
+The SQLite repo stores its file under `MOB_DATA_DIR` (the app's
+Documents directory on-device), falling back to a file in the project
+root for host dev so you can exercise the SQLite path locally:
+
+```elixir
+# lib/phoenix_adopt_mob_demo/local_repo.ex
+defmodule PhoenixAdoptMobDemo.LocalRepo do
+  use Ecto.Repo, otp_app: :phoenix_adopt_mob_demo, adapter: Ecto.Adapters.SQLite3
+
+  @impl true
+  def init(_type, config) do
+    db_path =
+      case System.get_env("MOB_DATA_DIR") do
+        nil -> config[:database] || Path.join(File.cwd!(), "phoenix_adopt_mob_demo.db")
+        dir -> Path.join(dir, "app.db")
+      end
+
+    {:ok, Keyword.merge(config, database: db_path, pool_size: 1)}
+  end
+end
+```
+
+The same migration files in `priv/repo/migrations` run on both adapters
+(for simple schemas). `config :phoenix_adopt_mob_demo, ecto_repos:
+[…Repo]` still lists only Postgres, so host `mix ecto.*` tasks target
+Postgres; the device migrates SQLite via `mob_app.ex` at boot.
+
+> This two-repo reconciliation is the part `mob.adopt` does **not** do
+> for a Postgres host (see the note under Step 3). It's a small,
+> one-time wiring — and a candidate for `mob.adopt` to automate.
+
+Any code that reads/writes data should go through the active repo so it
+works in both worlds — e.g. a context helper:
+
+```elixir
+defp repo, do: Application.get_env(:phoenix_adopt_mob_demo, :repo, PhoenixAdoptMobDemo.Repo)
+```
+
+The next step puts this to work with a tiny persisted feature.
+
+---
+
+## Step 10 — Persistence demo: a tiny Notes CRUD
+
+A minimal LiveView that writes to and reads from the database — proving
+persistence end-to-end: Postgres when you run it as a normal Phoenix
+server, SQLite when it runs on the device. Survives refresh / reconnect
+because it's in a database, not socket state.
+
+**Schema + migration.** Generate or hand-write:
+
+```bash
+mix ecto.gen.migration create_notes
+```
+
+```elixir
+# priv/repo/migrations/<timestamp>_create_notes.exs
+defmodule PhoenixAdoptMobDemo.Repo.Migrations.CreateNotes do
+  use Ecto.Migration
+
+  def change do
+    create table(:notes) do
+      add :body, :string, null: false
+      timestamps(type: :utc_datetime)
+    end
+  end
+end
+```
+
+```elixir
+# lib/phoenix_adopt_mob_demo/notes/note.ex
+defmodule PhoenixAdoptMobDemo.Notes.Note do
+  use Ecto.Schema
+  import Ecto.Changeset
+
+  schema "notes" do
+    field :body, :string
+    timestamps(type: :utc_datetime)
+  end
+
+  def changeset(note, attrs) do
+    note
+    |> cast(attrs, [:body])
+    |> validate_required([:body])
+    |> validate_length(:body, min: 1, max: 280)
+  end
+end
+```
+
+**Context — note it goes through the active repo**, so the same code
+persists to Postgres on the server and SQLite on the device:
+
+```elixir
+# lib/phoenix_adopt_mob_demo/notes.ex
+defmodule PhoenixAdoptMobDemo.Notes do
+  import Ecto.Query, warn: false
+  alias PhoenixAdoptMobDemo.Notes.Note
+
+  defp repo, do: Application.get_env(:phoenix_adopt_mob_demo, :repo, PhoenixAdoptMobDemo.Repo)
+
+  def list_notes, do: repo().all(from n in Note, order_by: [desc: n.inserted_at])
+  def change_note(note \\ %Note{}, attrs \\ %{}), do: Note.changeset(note, attrs)
+
+  def create_note(attrs) do
+    %Note{} |> Note.changeset(attrs) |> repo().insert()
+  end
+end
+```
+
+**LiveView + route.** Add `live "/notes", NotesLive` to the router's
+browser scope, and:
+
+```elixir
+# lib/phoenix_adopt_mob_demo_web/live/notes_live.ex
+defmodule PhoenixAdoptMobDemoWeb.NotesLive do
+  use PhoenixAdoptMobDemoWeb, :live_view
+  alias PhoenixAdoptMobDemo.Notes
+
+  def mount(_p, _s, socket), do: {:ok, socket |> assign_form() |> load()}
+
+  def handle_event("save", %{"note" => params}, socket) do
+    case Notes.create_note(params) do
+      {:ok, _} -> {:noreply, socket |> put_flash(:info, "Saved.") |> assign_form() |> load()}
+      {:error, cs} -> {:noreply, assign(socket, form: to_form(cs))}
+    end
+  end
+
+  defp assign_form(socket), do: assign(socket, form: to_form(Notes.change_note()))
+  defp load(socket), do: assign(socket, notes: Notes.list_notes())
+
+  def render(assigns) do
+    ~H"""
+    <Layouts.app flash={@flash}>
+      <.header>Notes<:subtitle>Postgres on the server, SQLite on-device.</:subtitle></.header>
+      <.form for={@form} id="note-form" phx-submit="save" class="mt-6 flex gap-2">
+        <div class="flex-1"><.input field={@form[:body]} type="text" placeholder="Write a note…" /></div>
+        <.button>Save</.button>
+      </.form>
+      <ul id="notes" class="mt-8 divide-y divide-zinc-200">
+        <li :for={n <- @notes} id={"note-#{n.id}"} class="py-3">{n.body}</li>
+        <li :if={@notes == []} class="py-3 text-zinc-500">No notes yet — add one; it survives a refresh.</li>
+      </ul>
+    </Layouts.app>
+    """
+  end
+end
+```
+
+Optionally link to it from the welcome page
+(`page_html/home.html.heex`):
+
+```heex
+<.link navigate={~p"/notes"} class="mt-6 inline-flex rounded-lg bg-zinc-900 px-4 py-2 text-white">
+  Open the Notes demo (DB persistence) &rarr;
+</.link>
+```
+
+**Run it both ways:**
+
+- Server: `mix ecto.migrate && mix phx.server`, open `/notes`, add a
+  note, refresh — it persists to Postgres.
+- Device: `mix mob.deploy` (Phoenix-only change), open the app, navigate
+  to `/notes`, add a note, kill and relaunch the app — it persists to
+  the on-device SQLite file. No server, no network.
+
+---
+
 ## Cleanup / iteration
 
 Day-to-day after the demo:
@@ -397,6 +625,17 @@ holds machine-local paths.
 If you see anything OUTSIDE that list modified, file an issue —
 adopt should be purely additive to the blessed shape.
 
+On top of adopt's output, this demo **manually** adds the on-device
+SQLite wiring (see [On-device database](#on-device-database--reconciling-a-postgres-host-step-3-wiring)),
+which `git diff` will also show:
+
+```
+?? lib/phoenix_adopt_mob_demo/local_repo.ex                     # SQLite repo
+ M lib/phoenix_adopt_mob_demo/application.ex                    # active-repo selection
+ M lib/phoenix_adopt_mob_demo/mob_app.ex                        # select + migrate SQLite on-device
+ M mix.exs                                                      # +:ecto_sqlite3
+```
+
 ---
 
 ## Troubleshooting cheatsheet
@@ -408,6 +647,8 @@ adopt should be purely additive to the blessed shape.
 | `requires a stock new LiveSocket(...)` | The project's `assets/js/app.js` isn't shaped like `mix phx.new`'s output. Either restore the stock file or use `mix mob.adopt --no-live-view` (thin-client mode). |
 | `requires a <body> tag in root.html.heex` | Same idea — heavily customised root layout. Restore the stock layout or use `--no-live-view`. |
 | `mix compile` fails after adopt | The generated `mob_app.ex` referenced a Mob module that isn't in your `:mob` version. Check Mob's CHANGELOG for breaking changes since `mob_new`'s template. |
+| `(UndefinedFunctionError) ... Ecto.Migrator` / `ecto_sqlite3` not started | The generated `mob_app.ex` needs `:ecto_sqlite3`, which `mob.adopt` doesn't add. Add `{:ecto_sqlite3, "~> 0.18"}` to deps. See [On-device database](#on-device-database--reconciling-a-postgres-host-step-3-wiring). |
+| On-device boot crashes trying to reach Postgres | The active repo wasn't switched to SQLite. Confirm `mob_app.ex` sets `:repo` to `<App>.LocalRepo` *before* `ensure_all_started`, and that `application.ex` starts the active repo (not a hardcoded Postgres `Repo`). |
 | App launches but WebView shows error page | Local Phoenix endpoint isn't up. The default `mob_app.ex` (LV mode) boots Phoenix on-device. Check `Logcat` for crash logs. |
 | `window.mob` is undefined in the WebView | Native shell didn't inject. Re-run `mix mob.deploy --native` and look for build errors. |
 

@@ -35,3 +35,6 @@ phoenix_adopt_mob_demo-*.tar
 npm-debug.log
 /assets/node_modules/
 
+
+# Mob local config
+mob.exs

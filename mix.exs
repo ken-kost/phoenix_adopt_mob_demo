@@ -3,6 +3,8 @@ defmodule PhoenixAdoptMobDemo.MixProject do
 
   def project do
     [
+      erlc_options: [:debug_info],
+      erlc_paths: ["src"],
       app: :phoenix_adopt_mob_demo,
       version: "0.1.0",
       elixir: "~> 1.15",
@@ -15,35 +17,31 @@ defmodule PhoenixAdoptMobDemo.MixProject do
     ]
   end
 
-  # Configuration for the OTP application.
-  #
-  # Type `mix help compile.app` for more information.
   def application do
-    [
-      mod: {PhoenixAdoptMobDemo.Application, []},
-      extra_applications: [:logger, :runtime_tools]
-    ]
+    [mod: {PhoenixAdoptMobDemo.Application, []}, extra_applications: [:logger, :runtime_tools]]
   end
 
   def cli do
-    [
-      preferred_envs: [precommit: :test]
-    ]
+    [preferred_envs: [precommit: :test]]
   end
 
-  # Specifies which paths to compile per environment.
-  defp elixirc_paths(:test), do: ["lib", "test/support"]
-  defp elixirc_paths(_), do: ["lib"]
+  defp elixirc_paths(:test) do
+    ["lib", "test/support"]
+  end
 
-  # Specifies your project dependencies.
-  #
-  # Type `mix help deps` for examples and options.
+  defp elixirc_paths(_) do
+    ["lib"]
+  end
+
   defp deps do
     [
       {:phoenix, "~> 1.8.8"},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
+      # SQLite is the on-device store (Postgres can't run on a phone).
+      # Used by PhoenixAdoptMobDemo.LocalRepo for the Mob build only.
+      {:ecto_sqlite3, "~> 0.18"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.2.0"},
@@ -52,28 +50,26 @@ defmodule PhoenixAdoptMobDemo.MixProject do
       {:esbuild, "~> 0.10", runtime: Mix.env() == :dev},
       {:tailwind, "~> 0.3", runtime: Mix.env() == :dev},
       {:heroicons,
-       github: "tailwindlabs/heroicons",
-       tag: "v2.2.0",
-       sparse: "optimized",
-       app: false,
-       compile: false,
-       depth: 1},
+       [
+         github: "tailwindlabs/heroicons",
+         tag: "v2.2.0",
+         sparse: "optimized",
+         app: false,
+         compile: false,
+         depth: 1
+       ]},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"},
       {:gettext, "~> 1.0"},
       {:jason, "~> 1.2"},
       {:dns_cluster, "~> 0.2.0"},
       {:bandit, "~> 1.5"},
-      {:igniter, "~> 0.7", only: [:dev, :test]}
+      {:igniter, "~> 0.7", only: [:dev, :test]},
+      {:mob, "~> 0.7"},
+      {:mob_dev, "~> 0.6", only: :dev, runtime: false}
     ]
   end
 
-  # Aliases are shortcuts or tasks specific to the current project.
-  # For example, to install project dependencies and perform other setup tasks, run:
-  #
-  #     $ mix setup
-  #
-  # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
       setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],

@@ -25,11 +25,38 @@ import {LiveSocket} from "phoenix_live_view"
 import {hooks as colocatedHooks} from "phoenix-colocated/phoenix_adopt_mob_demo"
 import topbar from "../vendor/topbar"
 
+// MobHook — Mob LiveView bridge. Added by `mix mob.new --liveview`.
+//
+// WHY THIS EXISTS: The native WebView injects window.mob pointing at the NIF
+// bridge (postMessage on iOS, JavascriptInterface on Android). In LiveView
+// mode we want window.mob to route through the LiveView WebSocket instead so
+// handle_event/3 in your LiveView receives JS messages and push_event/3
+// delivers server messages back to JS.
+//
+// This hook replaces window.mob on mount. It requires a DOM element with
+// phx-hook="MobHook" — see root.html.heex. Without that element this hook
+// never runs and messages silently use the native bridge instead.
+const MobHook = {
+  mounted() {
+    window.mob = {
+      // JS → LiveView: arrives as handle_event("mob_message", data, socket)
+      send: (data) => this.pushEvent("mob_message", data),
+      // LiveView → JS: push_event(socket, "mob_push", data) calls all handlers
+      onMessage: (handler) => this.handleEvent("mob_push", handler),
+      // No-op in LiveView mode. The native bridge calls this to deliver
+      // webview_post_message results, but in LiveView mode server messages
+      // arrive via handleEvent("mob_push") instead.
+      _dispatch: () => {}
+    }
+  }
+}
+
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks},
+  hooks: {MobHook, ...colocatedHooks},
 })
 
 // Show progress bar on live navigation and form submits
@@ -80,4 +107,3 @@ if (process.env.NODE_ENV === "development") {
     window.liveReloader = reloader
   })
 }
-

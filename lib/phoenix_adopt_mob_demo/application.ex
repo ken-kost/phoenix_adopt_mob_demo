@@ -9,7 +9,10 @@ defmodule PhoenixAdoptMobDemo.Application do
   def start(_type, _args) do
     children = [
       PhoenixAdoptMobDemoWeb.Telemetry,
-      PhoenixAdoptMobDemo.Repo,
+      # Start the active repo: Postgres (PhoenixAdoptMobDemo.Repo) on the
+      # server, SQLite (PhoenixAdoptMobDemo.LocalRepo) on-device. mob_app.ex
+      # overrides :repo before booting; the server default is Postgres.
+      Application.get_env(:phoenix_adopt_mob_demo, :repo, PhoenixAdoptMobDemo.Repo),
       {DNSCluster,
        query: Application.get_env(:phoenix_adopt_mob_demo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: PhoenixAdoptMobDemo.PubSub},
