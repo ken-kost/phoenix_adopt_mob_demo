@@ -51,12 +51,29 @@ const MobHook = {
   }
 }
 
+// Demo hook: buzz the phone (see DemoLive). In mob's LiveView-bridge mode,
+// window.mob.send is defined as `(data) => this.pushEvent("mob_message", data)`.
+// We push that same event directly from this in-view hook, which routes
+// reliably to handle_event("mob_message", ...) in DemoLive.
+//
+// Why not call window.mob.send here? The global window.mob installed by MobHook
+// lives on #mob-bridge in root.html.heex, which sits OUTSIDE the LiveView
+// container in Phoenix 1.8's layout model — so its pushEvent never reaches the
+// page LiveView (verified in the browser). An in-view hook's pushEvent does.
+const VibrateBtn = {
+  mounted() {
+    this.el.addEventListener("click", () => {
+      this.pushEvent("mob_message", {action: "vibrate"})
+    })
+  }
+}
+
 
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {MobHook, ...colocatedHooks},
+  hooks: {MobHook, VibrateBtn, ...colocatedHooks},
 })
 
 // Show progress bar on live navigation and form submits
