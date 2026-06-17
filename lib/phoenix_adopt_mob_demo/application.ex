@@ -9,7 +9,9 @@ defmodule PhoenixAdoptMobDemo.Application do
   def start(_type, _args) do
     children = [
       PhoenixAdoptMobDemoWeb.Telemetry,
-      {DNSCluster, query: Application.get_env(:phoenix_adopt_mob_demo, :dns_cluster_query) || :ignore},
+      PhoenixAdoptMobDemo.Repo,
+      {DNSCluster,
+       query: Application.get_env(:phoenix_adopt_mob_demo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: PhoenixAdoptMobDemo.PubSub},
       # Start a worker by calling: PhoenixAdoptMobDemo.Worker.start_link(arg)
       # {PhoenixAdoptMobDemo.Worker, arg},

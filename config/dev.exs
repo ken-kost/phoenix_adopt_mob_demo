@@ -1,5 +1,15 @@
 import Config
 
+# Configure your database
+config :phoenix_adopt_mob_demo, PhoenixAdoptMobDemo.Repo,
+  username: "postgres",
+  password: "postgres",
+  hostname: "localhost",
+  database: "phoenix_adopt_mob_demo_dev",
+  stacktrace: true,
+  show_sensitive_data_on_connection_error: true,
+  pool_size: 10
+
 # For development, we disable any cache and enable
 # debugging and code reloading.
 #

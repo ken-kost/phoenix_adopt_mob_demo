@@ -41,6 +41,9 @@ defmodule PhoenixAdoptMobDemo.MixProject do
   defp deps do
     [
       {:phoenix, "~> 1.8.8"},
+      {:phoenix_ecto, "~> 4.5"},
+      {:ecto_sql, "~> 3.13"},
+      {:postgrex, ">= 0.0.0"},
       {:phoenix_html, "~> 4.1"},
       {:phoenix_live_reload, "~> 1.2", only: :dev},
       {:phoenix_live_view, "~> 1.2.0"},
@@ -72,9 +75,16 @@ defmodule PhoenixAdoptMobDemo.MixProject do
   # See the documentation for `Mix` for more info on aliases.
   defp aliases do
     [
-      setup: ["deps.get", "assets.setup", "assets.build"],
+      setup: ["deps.get", "ecto.setup", "assets.setup", "assets.build"],
+      "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
+      "ecto.reset": ["ecto.drop", "ecto.setup"],
+      test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
       "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
-      "assets.build": ["compile", "tailwind phoenix_adopt_mob_demo", "esbuild phoenix_adopt_mob_demo"],
+      "assets.build": [
+        "compile",
+        "tailwind phoenix_adopt_mob_demo",
+        "esbuild phoenix_adopt_mob_demo"
+      ],
       "assets.deploy": [
         "tailwind phoenix_adopt_mob_demo --minify",
         "esbuild phoenix_adopt_mob_demo --minify",

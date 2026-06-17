@@ -8,6 +8,7 @@
 import Config
 
 config :phoenix_adopt_mob_demo,
+  ecto_repos: [PhoenixAdoptMobDemo.Repo],
   generators: [timestamp_type: :utc_datetime]
 
 # Configure the endpoint
